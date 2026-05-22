@@ -21,8 +21,8 @@ var (
 )
 
 const (
-	sessionIDTTL                = time.Hour
-	sessionIDCacheCleanupPeriod = 15 * time.Minute
+	sessionIDTTL                = 24 * time.Hour
+	sessionIDCacheCleanupPeriod = 30 * time.Minute
 )
 
 func startSessionIDCacheCleanup() {

@@ -19,8 +19,8 @@ var (
 )
 
 const (
-	userIDTTL                = time.Hour
-	userIDCacheCleanupPeriod = 15 * time.Minute
+	userIDTTL                = 24 * time.Hour
+	userIDCacheCleanupPeriod = 30 * time.Minute
 )
 
 func startUserIDCacheCleanup() {

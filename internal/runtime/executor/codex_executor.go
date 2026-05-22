@@ -860,24 +860,25 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 			if cache, ok = helps.GetCodexCache(key); !ok {
 				cache = helps.CodexCache{
 					ID:     uuid.New().String(),
-					Expire: time.Now().Add(1 * time.Hour),
+					Expire: time.Now().Add(helps.CodexCacheTTL),
 				}
 				helps.SetCodexCache(key, cache)
 			}
 		}
 	} else if from == "openai-response" {
 		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
-		if promptCacheKey.Exists() {
+		if promptCacheKey.Exists() && strings.TrimSpace(promptCacheKey.String()) != "" {
 			cache.ID = promptCacheKey.String()
+		} else {
+			cache.ID = codexPromptCacheIDFromContext(ctx)
 		}
 	} else if from == "openai" {
-		if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
-			cache.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
-		}
+		cache.ID = codexPromptCacheIDFromContext(ctx)
 	}
 
 	if cache.ID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
+		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_retention", helps.CodexPromptCacheRetention)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
@@ -887,6 +888,13 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
+}
+
+func codexPromptCacheIDFromContext(ctx context.Context) string {
+	if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
+	}
+	return ""
 }
 
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {

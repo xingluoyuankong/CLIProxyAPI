@@ -11,14 +11,22 @@ type CodexCache struct {
 }
 
 // codexCacheMap stores prompt cache IDs keyed by model+user_id.
-// Protected by codexCacheMu. Entries expire after 1 hour.
+// Protected by codexCacheMu. Entries use sliding expiration.
 var (
 	codexCacheMap = make(map[string]CodexCache)
 	codexCacheMu  sync.RWMutex
 )
 
-// codexCacheCleanupInterval controls how often expired entries are purged.
-const codexCacheCleanupInterval = 15 * time.Minute
+const (
+	// CodexCacheTTL controls how long CPA keeps stable Codex prompt cache IDs.
+	CodexCacheTTL = 24 * time.Hour
+
+	// CodexPromptCacheRetention is sent upstream for longer-lived prompt caching.
+	CodexPromptCacheRetention = "24h"
+
+	// codexCacheCleanupInterval controls how often expired entries are purged.
+	codexCacheCleanupInterval = 30 * time.Minute
+)
 
 // codexCacheCleanupOnce ensures the background cleanup goroutine starts only once.
 var codexCacheCleanupOnce sync.Once
@@ -41,27 +49,40 @@ func purgeExpiredCodexCache() {
 	codexCacheMu.Lock()
 	defer codexCacheMu.Unlock()
 	for key, cache := range codexCacheMap {
-		if cache.Expire.Before(now) {
+		if !cache.Expire.After(now) {
 			delete(codexCacheMap, key)
 		}
 	}
 }
 
 // GetCodexCache retrieves a cached entry, returning ok=false if not found or expired.
+// A hit renews the TTL so active sessions keep the same upstream prompt cache key.
 func GetCodexCache(key string) (CodexCache, bool) {
 	codexCacheCleanupOnce.Do(startCodexCacheCleanup)
-	codexCacheMu.RLock()
+	now := time.Now()
+
+	codexCacheMu.Lock()
+	defer codexCacheMu.Unlock()
+
 	cache, ok := codexCacheMap[key]
-	codexCacheMu.RUnlock()
-	if !ok || cache.Expire.Before(time.Now()) {
+	if !ok {
 		return CodexCache{}, false
 	}
+	if !cache.Expire.After(now) {
+		delete(codexCacheMap, key)
+		return CodexCache{}, false
+	}
+	cache.Expire = now.Add(CodexCacheTTL)
+	codexCacheMap[key] = cache
 	return cache, true
 }
 
 // SetCodexCache stores a cache entry.
 func SetCodexCache(key string, cache CodexCache) {
 	codexCacheCleanupOnce.Do(startCodexCacheCleanup)
+	if cache.Expire.IsZero() {
+		cache.Expire = time.Now().Add(CodexCacheTTL)
+	}
 	codexCacheMu.Lock()
 	codexCacheMap[key] = cache
 	codexCacheMu.Unlock()

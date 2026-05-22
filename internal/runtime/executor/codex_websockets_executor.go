@@ -220,7 +220,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(ctx, from, req, body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
 
 	var authID, authLabel, authType, authValue string
@@ -420,7 +420,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(ctx, from, req, body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
 
 	var authID, authLabel, authType, authValue string
@@ -803,7 +803,7 @@ func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
+func applyCodexPromptCacheHeaders(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
 	headers := http.Header{}
 	if len(rawJSON) == 0 {
 		return rawJSON, headers
@@ -819,19 +819,24 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 			} else {
 				cache = helps.CodexCache{
 					ID:     uuid.New().String(),
-					Expire: time.Now().Add(1 * time.Hour),
+					Expire: time.Now().Add(helps.CodexCacheTTL),
 				}
 				helps.SetCodexCache(key, cache)
 			}
 		}
 	} else if from == "openai-response" {
-		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
+		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() && strings.TrimSpace(promptCacheKey.String()) != "" {
 			cache.ID = promptCacheKey.String()
+		} else {
+			cache.ID = codexPromptCacheIDFromContext(ctx)
 		}
+	} else if from == "openai" {
+		cache.ID = codexPromptCacheIDFromContext(ctx)
 	}
 
 	if cache.ID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
+		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_retention", helps.CodexPromptCacheRetention)
 		setHeaderCasePreserved(headers, "session_id", cache.ID)
 		headers.Set("Conversation_id", cache.ID)
 	}

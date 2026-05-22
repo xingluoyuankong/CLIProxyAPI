@@ -19,7 +19,7 @@ type SignatureEntry struct {
 
 const (
 	// SignatureCacheTTL is how long signatures are valid
-	SignatureCacheTTL = 3 * time.Hour
+	SignatureCacheTTL = 24 * time.Hour
 
 	// SignatureTextHashLen is the length of the hash key (16 hex chars = 64-bit key space)
 	SignatureTextHashLen = 16
