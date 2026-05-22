@@ -66,3 +66,10 @@ func SetCodexCache(key string, cache CodexCache) {
 	codexCacheMap[key] = cache
 	codexCacheMu.Unlock()
 }
+
+// ClearCodexCache removes all cached Codex prompt cache IDs.
+func ClearCodexCache() {
+	codexCacheMu.Lock()
+	codexCacheMap = make(map[string]CodexCache)
+	codexCacheMu.Unlock()
+}

@@ -2,11 +2,13 @@ package management
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
@@ -154,6 +156,106 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 				t.Fatalf("proxy URL = %v, want %s", proxyURL, tc.wantProxy)
 			}
 		})
+	}
+}
+
+type apiToolsRefreshExecutor struct {
+	provider string
+	updated  *coreauth.Auth
+	err      error
+}
+
+func (e apiToolsRefreshExecutor) Identifier() string { return e.provider }
+
+func (e apiToolsRefreshExecutor) Execute(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e apiToolsRefreshExecutor) ExecuteStream(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (e apiToolsRefreshExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
+	return e.updated, e.err
+}
+
+func (e apiToolsRefreshExecutor) CountTokens(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e apiToolsRefreshExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+func TestResolveTokenForAuthForceRefreshUsesExecutor(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	original := &coreauth.Auth{
+		ID:       "codex:oauth:test",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token":  "old-token",
+			"refresh_token": "refresh-token",
+			"expired":       "2000-01-01T00:00:00Z",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), original); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	manager.RegisterExecutor(apiToolsRefreshExecutor{
+		provider: "codex",
+		updated: &coreauth.Auth{
+			ID:       original.ID,
+			Provider: original.Provider,
+			Metadata: map[string]any{"access_token": "new-token"},
+		},
+	})
+
+	h := &Handler{authManager: manager}
+	refreshed := original.Clone()
+	token, errToken := h.resolveTokenForAuth(context.Background(), refreshed, true)
+	if errToken != nil {
+		t.Fatalf("resolveTokenForAuth returned error: %v", errToken)
+	}
+	if token != "new-token" {
+		t.Fatalf("token = %q, want %q", token, "new-token")
+	}
+	if persisted, ok := manager.GetByID(original.ID); !ok || persisted == nil {
+		t.Fatal("expected persisted auth after refresh")
+	} else if got := persisted.Metadata["access_token"]; got != "new-token" {
+		t.Fatalf("persisted access_token = %v, want new-token", got)
+	}
+}
+
+func TestResolveTokenForAuthForceRefreshKeepsUsableCodexToken(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	original := &coreauth.Auth{
+		ID:       "codex:oauth:usable",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token":  "still-usable-token",
+			"refresh_token": "stale-refresh-token",
+			"expired":       "2999-01-01T00:00:00Z",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), original); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	manager.RegisterExecutor(apiToolsRefreshExecutor{
+		provider: "codex",
+		err:      errors.New("refresh should not run for usable codex token"),
+	})
+
+	h := &Handler{authManager: manager}
+	token, errToken := h.resolveTokenForAuth(context.Background(), original.Clone(), true)
+	if errToken != nil {
+		t.Fatalf("resolveTokenForAuth returned error: %v", errToken)
+	}
+	if token != "still-usable-token" {
+		t.Fatalf("token = %q, want %q", token, "still-usable-token")
 	}
 }
 

@@ -46,3 +46,21 @@ func TestOpenAIResponsesToOpenAI_IgnoresBuiltinTools(t *testing.T) {
 		t.Fatalf("expected 0 tools (builtin tools not supported in Chat Completions), got %d: %s", got, string(out))
 	}
 }
+
+func TestOpenAIResponsesToOpenAI_PreservesAllowedToolsImageGenerationChoice(t *testing.T) {
+	in := []byte(`{
+		"model":"gpt-5.4-mini",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"generate an image"}]}],
+		"tools":[{"type":"image_generation","model":"gpt-image-2"}],
+		"tool_choice":{"type":"allowed_tools","tools":[{"type":"image_generation"}]}
+	}`)
+
+	out := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatOpenAI, "gpt-5.4-mini", in, false)
+
+	if got := gjson.GetBytes(out, "tool_choice.type").String(); got != "allowed_tools" {
+		t.Fatalf("expected tool_choice.type=allowed_tools, got %q: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "tool_choice.tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("expected tool_choice.tools[0].type=image_generation, got %q: %s", got, string(out))
+	}
+}

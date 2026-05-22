@@ -245,31 +245,15 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 
 	tool := []byte(`{"type":"image_generation","action":"generate"}`)
 	tool, _ = sjson.SetBytes(tool, "model", imageModel)
-
-	if v := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String()); v != "" {
-		tool, _ = sjson.SetBytes(tool, "size", v)
-	}
-	if v := strings.TrimSpace(gjson.GetBytes(rawJSON, "quality").String()); v != "" {
-		tool, _ = sjson.SetBytes(tool, "quality", v)
-	}
-	if v := strings.TrimSpace(gjson.GetBytes(rawJSON, "background").String()); v != "" {
-		tool, _ = sjson.SetBytes(tool, "background", v)
-	}
-	if v := strings.TrimSpace(gjson.GetBytes(rawJSON, "output_format").String()); v != "" {
-		tool, _ = sjson.SetBytes(tool, "output_format", v)
-	}
-	if v := gjson.GetBytes(rawJSON, "output_compression"); v.Exists() {
-		if v.Type == gjson.Number {
-			tool, _ = sjson.SetBytes(tool, "output_compression", v.Int())
+	for _, field := range []string{"size", "quality", "background", "output_format", "moderation"} {
+		if v := strings.TrimSpace(gjson.GetBytes(rawJSON, field).String()); v != "" {
+			tool, _ = sjson.SetBytes(tool, field, v)
 		}
 	}
-	if v := gjson.GetBytes(rawJSON, "partial_images"); v.Exists() {
-		if v.Type == gjson.Number {
-			tool, _ = sjson.SetBytes(tool, "partial_images", v.Int())
+	for _, field := range []string{"output_compression", "partial_images"} {
+		if v := gjson.GetBytes(rawJSON, field); v.Exists() && v.Type == gjson.Number {
+			tool, _ = sjson.SetBytes(tool, field, v.Int())
 		}
-	}
-	if v := strings.TrimSpace(gjson.GetBytes(rawJSON, "moderation").String()); v != "" {
-		tool, _ = sjson.SetBytes(tool, "moderation", v)
 	}
 
 	responsesReq := buildImagesResponsesRequest(prompt, nil, tool)
@@ -281,25 +265,16 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 }
 
 func (h *OpenAIAPIHandler) ImagesEdits(c *gin.Context) {
-	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
-	if strings.HasPrefix(contentType, "application/json") {
-		h.imagesEditsFromJSON(c)
-		return
-	}
-	if strings.HasPrefix(contentType, "multipart/form-data") || contentType == "" {
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	if strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
 		h.imagesEditsFromMultipart(c)
 		return
 	}
-
-	c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-		Error: handlers.ErrorDetail{
-			Message: fmt.Sprintf("Invalid request: unsupported Content-Type %q", contentType),
-			Type:    "invalid_request_error",
-		},
-	})
+	h.imagesEditsFromJSON(c)
 }
 
 func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
+
 	form, err := c.MultipartForm()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -569,6 +544,31 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 	return req
 }
 
+func extractImageCallResult(item gjson.Result) imageCallResult {
+	return imageCallResult{
+		Result:        strings.TrimSpace(item.Get("result").String()),
+		RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
+		OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
+		Size:          strings.TrimSpace(item.Get("size").String()),
+		Background:    strings.TrimSpace(item.Get("background").String()),
+		Quality:       strings.TrimSpace(item.Get("quality").String()),
+	}
+}
+
+func appendImageCallResult(results []imageCallResult, item gjson.Result, firstMeta *imageCallResult) []imageCallResult {
+	if item.Get("type").String() != "image_generation_call" {
+		return results
+	}
+	entry := extractImageCallResult(item)
+	if entry.Result == "" {
+		return results
+	}
+	if len(results) == 0 {
+		*firstMeta = entry
+	}
+	return append(results, entry)
+}
+
 func (h *OpenAIAPIHandler) collectImagesFromResponses(c *gin.Context, responsesReq []byte, responseFormat string) {
 	c.Header("Content-Type", "application/json")
 
@@ -618,22 +618,34 @@ func collectImagesFromResponsesStream(ctx context.Context, data <-chan []byte, e
 				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("invalid SSE data JSON")}
 			}
 
-			if gjson.GetBytes(payload, "type").String() != "response.completed" {
-				continue
+			eventType := gjson.GetBytes(payload, "type").String()
+			switch eventType {
+			case "response.output_item.done":
+				var firstMeta imageCallResult
+				results := appendImageCallResult(nil, gjson.GetBytes(payload, "item"), &firstMeta)
+				if len(results) == 0 {
+					continue
+				}
+				createdAt := time.Now().Unix()
+				out, err := buildImagesAPIResponse(results, createdAt, nil, firstMeta, responseFormat)
+				if err != nil {
+					return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: err}
+				}
+				return out, true, nil
+			case "response.completed":
+				results, createdAt, usageRaw, firstMeta, err := extractImagesFromResponsesCompleted(payload)
+				if err != nil {
+					return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
+				}
+				if len(results) == 0 {
+					return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("upstream did not return image output")}
+				}
+				out, err := buildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, responseFormat)
+				if err != nil {
+					return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: err}
+				}
+				return out, true, nil
 			}
-
-			results, createdAt, usageRaw, firstMeta, err := extractImagesFromResponsesCompleted(payload)
-			if err != nil {
-				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
-			}
-			if len(results) == 0 {
-				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("upstream did not return image output")}
-			}
-			out, err := buildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, responseFormat)
-			if err != nil {
-				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: err}
-			}
-			return out, true, nil
 		}
 		return nil, false, nil
 	}
@@ -682,25 +694,7 @@ func extractImagesFromResponsesCompleted(payload []byte) (results []imageCallRes
 	output := gjson.GetBytes(payload, "response.output")
 	if output.IsArray() {
 		for _, item := range output.Array() {
-			if item.Get("type").String() != "image_generation_call" {
-				continue
-			}
-			res := strings.TrimSpace(item.Get("result").String())
-			if res == "" {
-				continue
-			}
-			entry := imageCallResult{
-				Result:        res,
-				RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
-				OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
-				Size:          strings.TrimSpace(item.Get("size").String()),
-				Background:    strings.TrimSpace(item.Get("background").String()),
-				Quality:       strings.TrimSpace(item.Get("quality").String()),
-			}
-			if len(results) == 0 {
-				firstMeta = entry
-			}
-			results = append(results, entry)
+			results = appendImageCallResult(results, item, &firstMeta)
 		}
 	}
 
@@ -880,6 +874,25 @@ func (h *OpenAIAPIHandler) forwardImagesStream(ctx context.Context, c *gin.Conte
 					data, _ = sjson.SetBytes(data, "b64_json", b64)
 				}
 				writeEvent(eventName, data)
+			case "response.output_item.done":
+				var firstMeta imageCallResult
+				results := appendImageCallResult(nil, gjson.GetBytes(payload, "item"), &firstMeta)
+				if len(results) == 0 {
+					continue
+				}
+				eventName := streamPrefix + ".completed"
+				for _, img := range results {
+					data := []byte(`{"type":""}`)
+					data, _ = sjson.SetBytes(data, "type", eventName)
+					if responseFormat == "url" {
+						mt := mimeTypeFromOutputFormat(img.OutputFormat)
+						data, _ = sjson.SetBytes(data, "url", "data:"+mt+";base64,"+img.Result)
+					} else {
+						data, _ = sjson.SetBytes(data, "b64_json", img.Result)
+					}
+					writeEvent(eventName, data)
+				}
+				return true
 			case "response.completed":
 				results, _, usageRaw, _, err := extractImagesFromResponsesCompleted(payload)
 				if err != nil {

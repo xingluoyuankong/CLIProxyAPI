@@ -56,6 +56,15 @@ func GetProviderName(modelName string) []string {
 		return providers
 	}
 
+	if staticModel := registry.LookupStaticModelInfo(modelName); staticModel != nil {
+		switch strings.ToLower(strings.TrimSpace(staticModel.Type)) {
+		case "openai":
+			return []string{"codex"}
+		case "claude", "gemini", "vertex", "antigravity", "kimi":
+			return []string{strings.ToLower(strings.TrimSpace(staticModel.Type))}
+		}
+	}
+
 	return providers
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -1282,7 +1283,155 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
+func cloneHTTPRequest(req *http.Request, ctx context.Context, body []byte) (*http.Request, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	cloned, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), reader)
+	if err != nil {
+		return nil, err
+	}
+	cloned.Header = req.Header.Clone()
+	cloned.Host = req.Host
+	cloned.URL.RawQuery = req.URL.RawQuery
+	cloned.ContentLength = req.ContentLength
+	if body != nil {
+		cloned.ContentLength = int64(len(body))
+	}
+	return cloned, nil
+}
+
+func (m *Manager) ExecuteHTTPRequest(ctx context.Context, providers []string, routeModel string, req *http.Request, opts cliproxyexecutor.Options) (*http.Response, error) {
+
+	normalized := m.normalizeProviders(providers)
+	if len(normalized) == 0 {
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	if req == nil {
+		return nil, &Error{Code: "invalid_request", Message: "request is nil", HTTPStatus: http.StatusBadRequest}
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, &Error{Code: "invalid_request", Message: err.Error(), HTTPStatus: http.StatusBadRequest}
+	}
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+
+	routeModel = strings.TrimSpace(routeModel)
+	opts = ensureRequestedModelMetadata(opts, routeModel)
+	_, maxRetryCredentials, maxWait := m.retrySettings()
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		resp, errExec := m.executeHTTPMixedOnce(ctx, normalized, routeModel, req, body, opts, maxRetryCredentials)
+		if errExec == nil {
+			return resp, nil
+		}
+		lastErr = errExec
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, routeModel, maxWait)
+		if !shouldRetry {
+			break
+		}
+		if errWait := waitForCooldown(ctx, wait); errWait != nil {
+			return nil, errWait
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
+}
+
+func (m *Manager) executeHTTPMixedOnce(ctx context.Context, providers []string, routeModel string, req *http.Request, body []byte, opts cliproxyexecutor.Options, maxRetryCredentials int) (*http.Response, error) {
+	if len(providers) == 0 {
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	tried := make(map[string]struct{})
+	attempted := make(map[string]struct{})
+	var lastErr error
+	for {
+		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
+		}
+		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
+		if errPick != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, errPick
+		}
+
+		entry := logEntryWithRequestID(ctx)
+		debugLogAuthSelection(entry, auth, provider, routeModel)
+		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+
+		tried[auth.ID] = struct{}{}
+		execCtx := ctx
+		if rt := m.roundTripperFor(auth); rt != nil {
+			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
+			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+		}
+
+		models, pooled := m.preparedExecutionModels(auth, routeModel)
+		if len(models) == 0 {
+			continue
+		}
+		attempted[auth.ID] = struct{}{}
+		var authErr error
+		for _, upstreamModel := range models {
+			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
+			httpReq, errClone := cloneHTTPRequest(req, execCtx, body)
+			if errClone != nil {
+				return nil, errClone
+			}
+			resp, errExec := executor.HttpRequest(execCtx, auth, httpReq)
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
+			if errExec != nil {
+				if errCtx := execCtx.Err(); errCtx != nil {
+					return nil, errCtx
+				}
+				result.Error = &Error{Message: errExec.Error()}
+				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
+					result.Error.HTTPStatus = se.StatusCode()
+				}
+				if ra := retryAfterFromError(errExec); ra != nil {
+					result.RetryAfter = ra
+				}
+				m.MarkResult(execCtx, result)
+				if isRequestInvalidError(errExec) {
+					return nil, errExec
+				}
+				authErr = errExec
+				continue
+			}
+			m.MarkResult(execCtx, result)
+			return resp, nil
+		}
+		if authErr != nil {
+			if isRequestInvalidError(authErr) {
+				return nil, authErr
+			}
+			lastErr = authErr
+			continue
+		}
+	}
+}
+
 func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int) (cliproxyexecutor.Response, error) {
+
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -3513,6 +3662,15 @@ func (m *Manager) executorFor(provider string) ProviderExecutor {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.executors[provider]
+}
+
+// ExecutorFor returns the registered executor for the given provider key.
+func (m *Manager) ExecutorFor(provider string) ProviderExecutor {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return nil
+	}
+	return m.executorFor(provider)
 }
 
 // roundTripperContextKey is an unexported context key type to avoid collisions.

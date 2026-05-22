@@ -18,6 +18,7 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -574,6 +575,17 @@ func main() {
 			if !localModel {
 				registry.StartModelsUpdater(context.Background())
 			}
+
+			// Auto-open browser after service starts
+			go func() {
+				time.Sleep(2 * time.Second)
+				openURL := fmt.Sprintf("http://localhost:%d", cfg.Port)
+				log.Infof("Opening browser: %s", openURL)
+				if err := browser.OpenURL(openURL); err != nil {
+					log.Warnf("Failed to open browser: %v", err)
+				}
+			}()
+
 			cmd.StartService(cfg, configFilePath, password)
 		}
 	}

@@ -333,6 +333,12 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				if accountID := strings.TrimSpace(gjson.GetBytes(data, "account_id").String()); accountID != "" {
+					fileData["account_id"] = accountID
+				}
+				if accessToken := strings.TrimSpace(gjson.GetBytes(data, "access_token").String()); accessToken != "" {
+					fileData["uses_access_token"] = true
+				}
 				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
 					switch pv.Type {
 					case gjson.Number:
@@ -390,6 +396,18 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
+	}
+	if auth.Metadata != nil {
+		if accountID, ok := auth.Metadata["account_id"].(string); ok {
+			if trimmed := strings.TrimSpace(accountID); trimmed != "" {
+				entry["account_id"] = trimmed
+			}
+		}
+		if accessToken, ok := auth.Metadata["access_token"].(string); ok {
+			if strings.TrimSpace(accessToken) != "" {
+				entry["uses_access_token"] = true
+			}
+		}
 	}
 	if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
 		if accountType != "" {

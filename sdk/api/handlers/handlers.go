@@ -549,7 +549,9 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
+
 func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+
 	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
 		return nil, nil, errMsg
@@ -773,7 +775,63 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	return dataChan, upstreamHeaders, errChan
 }
 
+func (h *BaseAPIHandler) ExecuteHTTPRequestWithAuthManager(ctx context.Context, modelName string, req *http.Request) (*http.Response, http.Header, *interfaces.ErrorMessage) {
+	resolvedModelName := modelName
+	initialSuffix := thinking.ParseSuffix(modelName)
+	if initialSuffix.ModelName == "auto" {
+		resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
+		if initialSuffix.HasSuffix {
+			resolvedModelName = fmt.Sprintf("%s(%s)", resolvedBase, initialSuffix.RawSuffix)
+		} else {
+			resolvedModelName = resolvedBase
+		}
+	} else {
+		resolvedModelName = util.ResolveAutoModel(modelName)
+	}
+	parsed := thinking.ParseSuffix(resolvedModelName)
+	baseModel := strings.TrimSpace(parsed.ModelName)
+	providers := util.GetProviderName(baseModel)
+	if len(providers) == 0 && baseModel != resolvedModelName {
+		providers = util.GetProviderName(resolvedModelName)
+	}
+	if len(providers) == 0 {
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("unknown provider for model %s", modelName)}
+	}
+	if req == nil {
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: fmt.Errorf("request is nil")}
+	}
+	meta := requestExecutionMetadata(ctx)
+	meta[coreexecutor.RequestedModelMetadataKey] = resolvedModelName
+	resp, err := h.AuthManager.ExecuteHTTPRequest(ctx, providers, resolvedModelName, req, coreexecutor.Options{
+		Headers:  req.Header.Clone(),
+		Query:    req.URL.Query(),
+		Metadata: meta,
+	})
+
+	if err != nil {
+		err = enrichAuthSelectionError(err, providers, resolvedModelName)
+		status := http.StatusInternalServerError
+		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
+			if code := se.StatusCode(); code > 0 {
+				status = code
+			}
+		}
+		var addon http.Header
+		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
+			if hdr := he.Headers(); hdr != nil {
+				addon = hdr.Clone()
+			}
+		}
+		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+	}
+	if !PassthroughHeadersEnabled(h.Cfg) {
+		return resp, nil, nil
+	}
+	return resp, FilterUpstreamHeaders(resp.Header), nil
+}
+
 func validateSSEDataJSON(chunk []byte) error {
+
 	for _, line := range bytes.Split(chunk, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
