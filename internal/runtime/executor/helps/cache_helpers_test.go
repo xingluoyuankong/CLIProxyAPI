@@ -17,7 +17,7 @@ func TestSetCodexCacheDefaultsToLongTTL(t *testing.T) {
 	if cache.ID != "cache-id" {
 		t.Fatalf("cache ID = %q, want cache-id", cache.ID)
 	}
-	if remaining := time.Until(cache.Expire); remaining < 23*time.Hour {
+	if remaining := time.Until(cache.Expire); remaining < 6*24*time.Hour {
 		t.Fatalf("cache TTL = %v, want close to %v", remaining, CodexCacheTTL)
 	}
 }
@@ -34,7 +34,7 @@ func TestGetCodexCacheRenewsTTL(t *testing.T) {
 	if !ok {
 		t.Fatal("expected cache entry")
 	}
-	if remaining := time.Until(cache.Expire); remaining < 23*time.Hour {
+	if remaining := time.Until(cache.Expire); remaining < 6*24*time.Hour {
 		t.Fatalf("renewed cache TTL = %v, want close to %v", remaining, CodexCacheTTL)
 	}
 }

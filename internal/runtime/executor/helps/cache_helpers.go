@@ -19,7 +19,7 @@ var (
 
 const (
 	// CodexCacheTTL controls how long CPA keeps stable Codex prompt cache IDs.
-	CodexCacheTTL = 24 * time.Hour
+	CodexCacheTTL = 7 * 24 * time.Hour
 
 	// CodexPromptCacheRetention is sent upstream for longer-lived prompt caching.
 	CodexPromptCacheRetention = "24h"

@@ -167,8 +167,8 @@ func TestRecentRequestsSnapshotIncludesCounts(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).In(time.Local)
 	a := &Auth{}
 
-	a.recordRecentRequest(now, true)
-	a.recordRecentRequest(now, false)
+	a.recordRecentRequest(now, true, 120*time.Millisecond)
+	a.recordRecentRequest(now, false, 240*time.Millisecond)
 
 	got := a.RecentRequestsSnapshot(now)
 	if len(got) != recentRequestBucketCount {
@@ -179,6 +179,12 @@ func TestRecentRequestsSnapshotIncludesCounts(t *testing.T) {
 	if newest.Success != 1 || newest.Failed != 1 {
 		t.Fatalf("newest bucket = success=%d failed=%d, want 1/1", newest.Success, newest.Failed)
 	}
+	if newest.LatencyCount != 2 || newest.LatencyMs != 360 || newest.AvgLatencyMs != 180 {
+		t.Fatalf("newest latency = count=%d total=%d avg=%v, want 2/360/180", newest.LatencyCount, newest.LatencyMs, newest.AvgLatencyMs)
+	}
+	if newest.LastLatencyMs != 240 {
+		t.Fatalf("newest last latency = %d, want 240", newest.LastLatencyMs)
+	}
 }
 
 func TestRecentRequestsSnapshotBucketAdvanceMovesCounts(t *testing.T) {
@@ -186,8 +192,8 @@ func TestRecentRequestsSnapshotBucketAdvanceMovesCounts(t *testing.T) {
 	next := now.Add(10 * time.Minute)
 	a := &Auth{}
 
-	a.recordRecentRequest(now, true)
-	a.recordRecentRequest(next, false)
+	a.recordRecentRequest(now, true, 100*time.Millisecond)
+	a.recordRecentRequest(next, false, 250*time.Millisecond)
 
 	got := a.RecentRequestsSnapshot(next)
 	if len(got) != recentRequestBucketCount {
@@ -201,5 +207,8 @@ func TestRecentRequestsSnapshotBucketAdvanceMovesCounts(t *testing.T) {
 	}
 	if newest.Success != 0 || newest.Failed != 1 {
 		t.Fatalf("newest bucket = success=%d failed=%d, want 0/1", newest.Success, newest.Failed)
+	}
+	if secondNewest.AvgLatencyMs != 100 || newest.AvgLatencyMs != 250 {
+		t.Fatalf("latency avgs = %v/%v, want 100/250", secondNewest.AvgLatencyMs, newest.AvgLatencyMs)
 	}
 }

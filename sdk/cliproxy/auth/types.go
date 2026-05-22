@@ -106,9 +106,12 @@ const (
 )
 
 type recentRequestBucket struct {
-	bucketID int64
-	success  int64
-	failed   int64
+	bucketID      int64
+	success       int64
+	failed        int64
+	latencyMs     int64
+	latencyCount  int64
+	lastLatencyMs int64
 }
 
 type recentRequestRing struct {
@@ -116,9 +119,13 @@ type recentRequestRing struct {
 }
 
 type RecentRequestBucket struct {
-	Time    string `json:"time"`
-	Success int64  `json:"success"`
-	Failed  int64  `json:"failed"`
+	Time          string  `json:"time"`
+	Success       int64   `json:"success"`
+	Failed        int64   `json:"failed"`
+	LatencyMs     int64   `json:"latency_ms"`
+	LatencyCount  int64   `json:"latency_count"`
+	AvgLatencyMs  float64 `json:"avg_latency_ms"`
+	LastLatencyMs int64   `json:"last_latency_ms"`
 }
 
 // QuotaState contains limiter tracking data for a credential.
@@ -172,7 +179,7 @@ func formatRecentRequestBucketLabel(bucketID int64) string {
 	return start.Format("15:04") + "-" + end.Format("15:04")
 }
 
-func (a *Auth) recordRecentRequest(now time.Time, success bool) {
+func (a *Auth) recordRecentRequest(now time.Time, success bool, latency time.Duration) {
 	if a == nil {
 		return
 	}
@@ -183,12 +190,24 @@ func (a *Auth) recordRecentRequest(now time.Time, success bool) {
 		bucket.bucketID = bucketID
 		bucket.success = 0
 		bucket.failed = 0
+		bucket.latencyMs = 0
+		bucket.latencyCount = 0
+		bucket.lastLatencyMs = 0
 	}
 	if success {
 		bucket.success++
-		return
+	} else {
+		bucket.failed++
 	}
-	bucket.failed++
+	if latency > 0 {
+		latencyMs := latency.Milliseconds()
+		if latencyMs < 1 {
+			latencyMs = 1
+		}
+		bucket.latencyMs += latencyMs
+		bucket.latencyCount++
+		bucket.lastLatencyMs = latencyMs
+	}
 }
 
 func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
@@ -208,6 +227,12 @@ func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
 		if bucket.bucketID == bucketID {
 			entry.Success = bucket.success
 			entry.Failed = bucket.failed
+			entry.LatencyMs = bucket.latencyMs
+			entry.LatencyCount = bucket.latencyCount
+			entry.LastLatencyMs = bucket.lastLatencyMs
+			if bucket.latencyCount > 0 {
+				entry.AvgLatencyMs = float64(bucket.latencyMs) / float64(bucket.latencyCount)
+			}
 		}
 		out = append(out, entry)
 	}

@@ -21,7 +21,7 @@ var (
 )
 
 const (
-	sessionIDTTL                = 24 * time.Hour
+	sessionIDTTL                = 7 * 24 * time.Hour
 	sessionIDCacheCleanupPeriod = 30 * time.Minute
 )
 
@@ -78,7 +78,7 @@ func CachedSessionID(apiKey string) string {
 		sessionIDCacheMu.Unlock()
 	}
 
-	newID := uuid.New().String()
+	newID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:claude:session:"+key)).String()
 
 	sessionIDCacheMu.Lock()
 	entry, ok = sessionIDCache[key]

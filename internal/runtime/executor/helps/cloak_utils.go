@@ -2,6 +2,7 @@ package helps
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
 	"strings"
@@ -21,6 +22,17 @@ func generateFakeUserID() string {
 	accountUUID := uuid.New().String()
 	sessionUUID := uuid.New().String()
 	return "user_" + hexPart + "_account_" + accountUUID + "_session_" + sessionUUID
+}
+
+func generateStableFakeUserID(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		return generateFakeUserID()
+	}
+	userHash := sha256.Sum256([]byte("cli-proxy-api:claude:user:" + seed))
+	accountUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:claude:account:"+seed)).String()
+	sessionUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:claude:user-session:"+seed)).String()
+	return "user_" + hex.EncodeToString(userHash[:]) + "_account_" + accountUUID + "_session_" + sessionUUID
 }
 
 // isValidUserID checks if a user ID matches Claude Code format.

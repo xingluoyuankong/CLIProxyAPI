@@ -818,7 +818,7 @@ func applyCodexPromptCacheHeaders(ctx context.Context, from sdktranslator.Format
 				cache = cached
 			} else {
 				cache = helps.CodexCache{
-					ID:     uuid.New().String(),
+					ID:     codexPromptCacheIDFromSeed("claude:" + key),
 					Expire: time.Now().Add(helps.CodexCacheTTL),
 				}
 				helps.SetCodexCache(key, cache)

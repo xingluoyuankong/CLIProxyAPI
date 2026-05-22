@@ -25,7 +25,7 @@ func TestCachedUserID_ReusesWithinTTL(t *testing.T) {
 	}
 }
 
-func TestCachedUserID_ExpiresAfterTTL(t *testing.T) {
+func TestCachedUserID_IsStableAfterExpiry(t *testing.T) {
 	resetUserIDCache()
 
 	expiredID := CachedUserID("api-key-expired")
@@ -38,11 +38,11 @@ func TestCachedUserID_ExpiresAfterTTL(t *testing.T) {
 	userIDCacheMu.Unlock()
 
 	newID := CachedUserID("api-key-expired")
-	if newID == expiredID {
-		t.Fatalf("expected expired user_id to be replaced, got %q", newID)
+	if newID != expiredID {
+		t.Fatalf("expected stable user_id after expiry, got %q and %q", expiredID, newID)
 	}
 	if newID == "" {
-		t.Fatal("expected regenerated user_id to be non-empty")
+		t.Fatal("expected stable user_id to be non-empty")
 	}
 }
 
@@ -80,7 +80,25 @@ func TestCachedUserID_RenewsTTLOnHit(t *testing.T) {
 	entry := userIDCache[cacheKey]
 	userIDCacheMu.RUnlock()
 
-	if entry.expire.Sub(soon) < 30*time.Minute {
+	if entry.expire.Sub(soon) < 6*24*time.Hour {
 		t.Fatalf("expected TTL to renew, got %v remaining", entry.expire.Sub(soon))
+	}
+}
+
+func TestCachedUserID_IsStableAfterCacheReset(t *testing.T) {
+	resetUserIDCache()
+
+	first := CachedUserID("api-key-stable")
+	resetUserIDCache()
+	second := CachedUserID("api-key-stable")
+
+	if first == "" || second == "" {
+		t.Fatalf("expected stable user_ids to be non-empty, got %q and %q", first, second)
+	}
+	if first != second {
+		t.Fatalf("expected user_id to survive cache reset by derivation, got %q and %q", first, second)
+	}
+	if !IsValidUserID(first) {
+		t.Fatalf("stable user_id is invalid: %q", first)
 	}
 }

@@ -23,8 +23,8 @@ func TestManagerMarkResultRecordsRecentRequests(t *testing.T) {
 		t.Fatalf("Register returned error: %v", err)
 	}
 
-	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: true})
-	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: false})
+	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: true, Latency: 100 * time.Millisecond})
+	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: false, Latency: 300 * time.Millisecond})
 
 	gotAuth, ok := mgr.GetByID("auth-1")
 	if !ok || gotAuth == nil {
@@ -38,12 +38,19 @@ func TestManagerMarkResultRecordsRecentRequests(t *testing.T) {
 	snapshot := gotAuth.RecentRequestsSnapshot(time.Now())
 	var successTotal int64
 	var failedTotal int64
+	var latencyCount int64
+	var latencyMs int64
 	for _, bucket := range snapshot {
 		successTotal += bucket.Success
 		failedTotal += bucket.Failed
+		latencyCount += bucket.LatencyCount
+		latencyMs += bucket.LatencyMs
 	}
 	if successTotal != 1 || failedTotal != 1 {
 		t.Fatalf("totals = success=%d failed=%d, want 1/1", successTotal, failedTotal)
+	}
+	if latencyCount != 2 || latencyMs != 400 {
+		t.Fatalf("latency = count=%d total=%d, want 2/400", latencyCount, latencyMs)
 	}
 }
 

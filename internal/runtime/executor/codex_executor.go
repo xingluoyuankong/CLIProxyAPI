@@ -859,7 +859,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 			var ok bool
 			if cache, ok = helps.GetCodexCache(key); !ok {
 				cache = helps.CodexCache{
-					ID:     uuid.New().String(),
+					ID:     codexPromptCacheIDFromSeed("claude:" + key),
 					Expire: time.Now().Add(helps.CodexCacheTTL),
 				}
 				helps.SetCodexCache(key, cache)
@@ -892,9 +892,17 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 
 func codexPromptCacheIDFromContext(ctx context.Context) string {
 	if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
-		return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
+		return codexPromptCacheIDFromSeed(apiKey)
 	}
 	return ""
+}
+
+func codexPromptCacheIDFromSeed(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		return ""
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+seed)).String()
 }
 
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {

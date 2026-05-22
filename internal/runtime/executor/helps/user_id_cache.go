@@ -19,7 +19,7 @@ var (
 )
 
 const (
-	userIDTTL                = 24 * time.Hour
+	userIDTTL                = 7 * 24 * time.Hour
 	userIDCacheCleanupPeriod = 30 * time.Minute
 )
 
@@ -75,7 +75,7 @@ func CachedUserID(apiKey string) string {
 		userIDCacheMu.Unlock()
 	}
 
-	newID := generateFakeUserID()
+	newID := generateStableFakeUserID(key)
 
 	userIDCacheMu.Lock()
 	entry, ok = userIDCache[key]

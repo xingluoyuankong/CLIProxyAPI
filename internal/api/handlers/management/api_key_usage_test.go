@@ -6,20 +6,25 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
-func sumRecentRequestBuckets(buckets []coreauth.RecentRequestBucket) (int64, int64) {
+func sumRecentRequestBuckets(buckets []coreauth.RecentRequestBucket) (int64, int64, int64, int64) {
 	var success int64
 	var failed int64
+	var latencyMs int64
+	var latencyCount int64
 	for _, bucket := range buckets {
 		success += bucket.Success
 		failed += bucket.Failed
+		latencyMs += bucket.LatencyMs
+		latencyCount += bucket.LatencyCount
 	}
-	return success, failed
+	return success, failed, latencyMs, latencyCount
 }
 
 func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
@@ -48,9 +53,9 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("register claude auth: %v", err)
 	}
 
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: true})
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: false})
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "claude-auth", Provider: "claude", Model: "claude-4", Success: true})
+	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: true, Latency: 100 * time.Millisecond})
+	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: false, Latency: 300 * time.Millisecond})
+	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "claude-auth", Provider: "claude", Model: "claude-4", Success: true, Latency: 200 * time.Millisecond})
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
 
@@ -76,9 +81,18 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 	if len(codexEntry.RecentRequests) != 20 {
 		t.Fatalf("codex buckets len = %d, want 20", len(codexEntry.RecentRequests))
 	}
-	codexSuccess, codexFailed := sumRecentRequestBuckets(codexEntry.RecentRequests)
+	codexSuccess, codexFailed, codexLatencyMs, codexLatencyCount := sumRecentRequestBuckets(codexEntry.RecentRequests)
 	if codexSuccess != 1 || codexFailed != 1 {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexSuccess, codexFailed)
+	}
+	if codexLatencyMs != 400 || codexLatencyCount != 2 {
+		t.Fatalf("codex latency = %d/%d, want 400/2", codexLatencyMs, codexLatencyCount)
+	}
+	if codexEntry.Summary.WindowRequests != 2 || codexEntry.Summary.AverageLatencyMs != 200 {
+		t.Fatalf("codex summary = %+v, want window requests 2 avg latency 200", codexEntry.Summary)
+	}
+	if codexEntry.Summary.InstantRPM <= 0 || codexEntry.Summary.AverageRPM <= 0 {
+		t.Fatalf("codex summary rates = instant %v average %v, want positive", codexEntry.Summary.InstantRPM, codexEntry.Summary.AverageRPM)
 	}
 
 	claudeEntry := payload["claude"]["https://claude.example.com|claude-key"]
@@ -88,8 +102,11 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 	if len(claudeEntry.RecentRequests) != 20 {
 		t.Fatalf("claude buckets len = %d, want 20", len(claudeEntry.RecentRequests))
 	}
-	claudeSuccess, claudeFailed := sumRecentRequestBuckets(claudeEntry.RecentRequests)
+	claudeSuccess, claudeFailed, claudeLatencyMs, claudeLatencyCount := sumRecentRequestBuckets(claudeEntry.RecentRequests)
 	if claudeSuccess != 1 || claudeFailed != 0 {
 		t.Fatalf("claude totals = %d/%d, want 1/0", claudeSuccess, claudeFailed)
+	}
+	if claudeLatencyMs != 200 || claudeLatencyCount != 1 {
+		t.Fatalf("claude latency = %d/%d, want 200/1", claudeLatencyMs, claudeLatencyCount)
 	}
 }
