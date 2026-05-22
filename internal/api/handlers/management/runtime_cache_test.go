@@ -1,7 +1,7 @@
 package management
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,22 +10,26 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 )
 
 func TestClearRuntimeCacheClearsRuntimeCachesOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	helps.ClearCodexCache()
 	cache.ClearSignatureCache("")
+	redisqueue.SetEnabled(true)
+	defer redisqueue.SetEnabled(false)
+	_ = redisqueue.PopOldest(100)
 
 	helps.SetCodexCache("model-user", helps.CodexCache{
 		ID:     "cache-id",
 		Expire: time.Now().Add(time.Hour),
 	})
 	cache.CacheSignature("claude-3-5-sonnet", "thinking text", strings.Repeat("s", 50))
+	usageBefore := []byte(`{"sentinel":"usage-record"}`)
+	redisqueue.Enqueue(usageBefore)
 
 	if _, ok := helps.GetCodexCache("model-user"); !ok {
 		t.Fatal("expected Codex prompt cache to be seeded")
@@ -34,21 +38,8 @@ func TestClearRuntimeCacheClearsRuntimeCachesOnly(t *testing.T) {
 		t.Fatal("expected signature cache to be seeded")
 	}
 
-	stats := usage.NewRequestStatistics()
-	stats.Record(context.Background(), coreusage.Record{
-		APIKey:      "test-key",
-		Model:       "gpt-5.4",
-		RequestedAt: time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC),
-		Detail: coreusage.Detail{
-			InputTokens:  10,
-			OutputTokens: 20,
-			TotalTokens:  30,
-		},
-	})
-	before := stats.Snapshot()
-
 	router := gin.New()
-	handler := &Handler{usageStats: stats}
+	handler := &Handler{}
 	router.POST("/v0/management/runtime-cache/clear", handler.ClearRuntimeCache)
 
 	rec := httptest.NewRecorder()
@@ -80,11 +71,8 @@ func TestClearRuntimeCacheClearsRuntimeCachesOnly(t *testing.T) {
 		t.Fatalf("expected signature cache to be cleared, got %q", got)
 	}
 
-	after := stats.Snapshot()
-	if after.TotalRequests != before.TotalRequests ||
-		after.SuccessCount != before.SuccessCount ||
-		after.FailureCount != before.FailureCount ||
-		after.TotalTokens != before.TotalTokens {
-		t.Fatalf("usage stats changed: before=%+v after=%+v", before, after)
+	usageAfter := redisqueue.PopOldest(10)
+	if len(usageAfter) != 1 || !bytes.Equal(usageAfter[0], usageBefore) {
+		t.Fatalf("usage queue changed: got %q, want %q", usageAfter, usageBefore)
 	}
 }
